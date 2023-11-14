@@ -24,7 +24,7 @@
 BASE_DIR="$(dirname $0)"
 TMP_DIR="${BASE_DIR}/tmp"
 ORDER_DIR="${TMP_DIR}/order"
-OUTPUT_DIR="${BASE_DIR}/output"
+DEFAULT_OUTPUT_DIR="${BASE_DIR}/output"
 INPUT_DIR="${TMP_DIR}/input"
 MERGE_DIR="${TMP_DIR}/merge"
 
@@ -52,7 +52,7 @@ error() {
 
 hi() {
   # Highlight a string.
-  local TEXT="$1"
+  local TEXT="$*"
 
   echo -en "${F_YELLOW}${TEXT}${CLR}"
 }
@@ -72,9 +72,9 @@ clean_tmp_dir() {
 }
 
 clean_output_dir() {
-  if [[ -d ${OUTPUT_DIR} ]]; then
+  if [[ -d "${OUTPUT_DIR}" ]]; then
     log "Cleaning up output directory..."
-    rm -rf ${OUTPUT_DIR}
+    rm -rf "${OUTPUT_DIR}"
   fi
 }
 
@@ -99,9 +99,8 @@ make_tmp_dir() {
 }
 
 make_output_dir() {
-  clean_output_dir
   log "Creating output directory..."
-  mkdir ${OUTPUT_DIR}
+  mkdir "${OUTPUT_DIR}"
 }
 
 make_input_dir() {
@@ -120,16 +119,17 @@ convert_breakline_file() {
   # Convert a breakline file.
   #
   # The format of the file is:-
-  #         <LINE_ID>
+  #         <ORIGINAL_LINE_ID>
   # <START_X>    <START_Y>    <START_Z>
   # <END_X>      <END_Y>      <END_Z>
   # END
   #
   # We convert it to two CSV-style lines:-
-  # <UNIQUE_ID>,<AREA_NAME>,<LINE_ID>,<hard|soft>,start,<START_X>,<START_Y>,<START_Z>
-  # <UNIQUE_ID>,<AREA_NAME>,<LINE_ID>,<hard|soft>,end,<END_X>,<END_Y>,<END_Z>
+  # <POINT_ID>,<AREA_NAME>,<LINE_ID>,<ORIGINAL_LINE_ID>,<hard|soft>,start,<START_X>,<START_Y>,<START_Z>
+  # <POINT_ID>,<AREA_NAME>,<LINE_ID>.<ORIGINAL_LINE_ID>,<hard|soft>,end,<END_X>,<END_Y>,<END_Z>
   # where:-
-  # * <UNIQUE_ID> is <AREA_NAME>_<hard|soft>_<LINE_ID>_<start|end>
+  # * <POINT_ID> is <AREA_NAME>_<hard|soft>_<ORIGINAL_LINE_ID>_<start|end>
+  # * <LINE_ID> is <AREA_NAME>_<hard|soft>_<ORIGINAL_LINE_ID>
   # * <AREA_NAME> is the name of the section (e.g. '72e01ne')
 
   local BREAKLINE_FILE="$1"
@@ -146,10 +146,10 @@ convert_breakline_file() {
 
   log "> Converting ${BREAKLINE_TYPE} breakline file $(hi ${BREAKLINE_FILE})..."
 
-  local UNIQUE_ID_PREFIX="${BREAKLINE_FILE_NAME}_${BREAKLINE_TYPE}"
+  local POINT_ID_PREFIX="${BREAKLINE_FILE_NAME}_${BREAKLINE_TYPE}"
 
   cat ${BREAKLINE_FILE} \
-    | perl -0777 -pe "s/\s+(\d+)\r\n([0-9.]+)\s+([0-9.]+)\s+(\-?[0-9.]+)\r\n([0-9.]+)\s+([0-9.]+)\s+(\-?[0-9.]+)\r\nEND\r\n/${UNIQUE_ID_PREFIX}_\1_start,${BREAKLINE_FILE_NAME},\1,${BREAKLINE_TYPE},start,\2,\3,\4\n${UNIQUE_ID_PREFIX}_\1_end,${BREAKLINE_FILE_NAME},\1,${BREAKLINE_TYPE},end,\5,\6,\7\n/igs" \
+    | perl -0777 -pe "s/\s+(\d+)\r\n([0-9.]+)\s+([0-9.]+)\s+(\-?[0-9.]+)\r\n([0-9.]+)\s+([0-9.]+)\s+(\-?[0-9.]+)\r\nEND\r\n/${POINT_ID_PREFIX}_\1_start,${BREAKLINE_FILE_NAME},${POINT_ID_PREFIX}_\1,\1,${BREAKLINE_TYPE},start,\2,\3,\4\n${POINT_ID_PREFIX}_\1_end,${BREAKLINE_FILE_NAME},${POINT_ID_PREFIX}_\1,\1,${BREAKLINE_TYPE},end,\5,\6,\7\n/igs" \
     | grep -v "^END" >${BREAKLINE_CONVERTED_FILE}
 
   rm ${BREAKLINE_FILE}
@@ -184,12 +184,12 @@ convert_masspoint_file() {
   # Convert a masspoint file.
   #
   # The format of the file is:-
-  # <POINT_ID>,<X>,<Y>,<Z>
+  # <ORIGINAL_POINT_ID>,<X>,<Y>,<Z>
   #
   # Since this is already a CSV, we only need to add a unique ID and the area:-
-  # <UNIQUE_ID>,<AREA_NAME>,<POINT_ID>,<X>,<Y>,<Z>
+  # <POINT_ID>,<AREA_NAME>,<ORIGINAL_POINT_ID>,<X>,<Y>,<Z>
   # where:-
-  # * <UNIQUE_ID> is <AREA_NAME>_<POINT_ID>
+  # * <POINT_ID> is <AREA_NAME>_<ORIGINAL_POINT_ID>
   # * <AREA_NAME> is the same as for the breakline files
 
   local MASSPOINT_FILE=$1
@@ -201,10 +201,10 @@ convert_masspoint_file() {
 
   log "> Converting masspoint file $(hi ${MASSPOINT_FILE})..."
 
-  local UNIQUE_ID_PREFIX="${MASSPOINT_FILE_NAME}"
+  local POINT_ID_PREFIX="${MASSPOINT_FILE_NAME}"
 
   cat ${MASSPOINT_FILE} \
-    | perl -0777 -pe "s/(\d+),([0-9.]+),([0-9.]+),(\-?[0-9.]+)/${UNIQUE_ID_PREFIX}_\1,${MASSPOINT_FILE_NAME},\1,\2,\3/g" \
+    | perl -0777 -pe "s/(\d+),([0-9.]+),([0-9.]+),(\-?[0-9.]+)/${POINT_ID_PREFIX}_\1,${MASSPOINT_FILE_NAME},\1,\2,\3,\4/g" \
     | grep -v "^ENV" >${MASSPOINT_CONVERTED_FILE}
 
   local MASSPOINT_COUNT=$(cat ${MASSPOINT_CONVERTED_FILE} | cut -f2-3 -d"," | sort -n | uniq | wc -l)
@@ -235,15 +235,15 @@ merge_masspoint_files() {
   log "Creating masspoint CSV..."
 
   # Add the CSV header.
-  echo "uid,area,original_id,x,y,z" >${MASSPOINT_CSV}
+  echo "point_id,area_id,original_point_id,x,y,z" >"${MASSPOINT_CSV}"
 
   # Loop through all the files and add them.
   for MASSPOINT_FILE in ${MASSPOINT_DIR}/*; do
     log "> Merging masspoint file $(hi ${MASSPOINT_FILE})..."
-    cat ${MASSPOINT_FILE} >>${MASSPOINT_CSV}
+    cat ${MASSPOINT_FILE} >>"${MASSPOINT_CSV}"
   done
 
-  local MASSPOINT_COUNT=$(($(cat ${MASSPOINT_CSV} | cut -f2-3 -d"," | sort -n | uniq | wc -l)-1))
+  local MASSPOINT_COUNT=$(($(cat "${MASSPOINT_CSV}" | cut -f2-3 -d"," | sort -n | uniq | wc -l)-1))
 
   log "Created masspoint CSV $(hi ${MASSPOINT_CSV}) with $(count ${MASSPOINT_COUNT}) points."
 }
@@ -258,15 +258,15 @@ merge_breakline_files() {
   log "Creating ${BREAKLINE_TYPE} breakline CSV..."
 
   # Add the CSV header.
-  echo "uid,area,original_id,line_type,point_type,x,y,z" >${BREAKLINE_CSV}
+  echo "point_id,area_id,line_id,original_line_id,line_type,point_type,x,y,z" >"${BREAKLINE_CSV}"
 
   # Loop through all the files and add them.
   for BREAKLINE_FILE in ${BREAKLINE_DIR}/*; do
     log "> Merging ${BREAKLINE_TYPE} breakline file $(hi ${BREAKLINE_FILE})..."
-    cat ${BREAKLINE_FILE} >>${BREAKLINE_CSV}
+    cat ${BREAKLINE_FILE} >>"${BREAKLINE_CSV}"
   done
 
-  local BREAKLINE_COUNT=$(($(cat ${BREAKLINE_CSV} | cut -f2-3 -d"," | sort -n | uniq | wc -l)-1))
+  local BREAKLINE_COUNT=$(($(cat "${BREAKLINE_CSV}" | cut -f2-3 -d"," | sort -n | uniq | wc -l)-1))
 
   log "Created ${BREAKLINE_TYPE} breakline CSV $(hi ${BREAKLINE_CSV}) with $(count ${BREAKLINE_COUNT}) breaklines."
 }
@@ -347,6 +347,12 @@ fi
 
 ORDER_ZIP_FILE="$1"
 
+if [[ ! -z ${2+x} ]]; then
+  OUTPUT_DIR="$2"
+else
+  OUTPUT_DIR="${DEFAULT_OUTPUT_DIR}"
+fi
+
 # Unpack the order file.
 make_tmp_dir
 unpack_order "${ORDER_ZIP_FILE}"
@@ -370,3 +376,5 @@ merge_breakline_files hard
 merge_breakline_files soft
 
 clean_tmp_dir
+
+log "Files output to $(hi ${OUTPUT_DIR})."
